@@ -1,0 +1,311 @@
+###-- get the dataset using wget command in GCP
+wget https://www.dropbox.com/s/ey2ekrkqe1u1624/COVID19_cases.csv
+
+###-- Create HDFS directory (if not already done)
+
+hadoop fs -mkdir /BigData
+
+###-- Load dataset into HDFS
+
+hadoop fs -copyFromLocal COVID19_cases.csv /BigData/.
+
+###-- start Spark
+
+spark-shell --master yarn
+
+/* Run import command for sql functions */
+
+import org.apache.spark.sql.functions.{expr, col, column, min, max, desc, avg, sum}
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types._
+import org.apache.spark.ml.classification.{RandomForestClassificationModel, RandomForestClassifier}
+import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
+import org.apache.spark.ml.feature.{IndexToString, StringIndexer, VectorIndexer} 
+import org.apache.spark.ml.evaluation.BinaryClassificationEvaluator
+import org.apache.spark.ml.feature.{VectorAssembler}
+import org.apache.spark.ml.regression.{LinearRegression}
+import org.apache.spark.ml.evaluation.{RegressionEvaluator}
+import org.apache.spark.ml.tuning.{CrossValidator, CrossValidatorModel, ParamGridBuilder}
+import org.apache.spark.ml.param.ParamMap
+import org.apache.spark.sql.{DataFrame, SparkSession}
+
+
+/* Creation of a COVID19_cases dataset schema in Spark */
+
+-- use :paste for the following set of instructions
+
+val schema = StructType(Array(
+
+		StructField("Unique_id", IntegerType, true),
+		StructField("Assigned_ID", IntegerType, true),
+		StructField("Outbreak_Associated", StringType, true),
+		StructField("Age_Group", StringType, true),
+		StructField("Neighbourhood_Name", StringType, true),
+		StructField("FSA", StringType, true),
+		StructField("Source_of_Infection", StringType, true),
+		StructField("Classification", StringType, true),
+		StructField("Episode_Date", DateType, true),
+		StructField("Reported_Date", DateType, true),
+		StructField("Client_Gender", StringType, true),
+		StructField("Outcome", StringType, true),
+		StructField("Currently_Hospitalized", StringType, true),
+		StructField("Currently_in_ICU", StringType, true),
+		StructField("Currently_Intubated", StringType, true),
+		StructField("Ever_Hospitalized", StringType, true),
+		StructField("Ever_in_ICU", StringType, true),
+		StructField("Ever_Intubated", StringType, true)))
+
+-- end paste (Cntrl-D)
+
+/* Load the dataset into Spark from HDFS using the following commands */		
+
+-- use :paste for the following set of instructions
+
+val covid_19_cases = spark
+  .read.format("csv")
+  .option("header", "True")
+  .schema(schema)
+  .load("hdfs://10.128.0.7:8020/BigData/COVID19_cases.csv")
+
+-- end paste (Cntrl-D) 
+
+covid_19_cases.show
+
+covid_19_cases.printSchema()
+
+/* Finding number of null values in dataset */
+val covid_19_cases_null_values = covid_19_cases.select(covid_19_cases.columns.map(c => sum(col(c).isNull.cast("int")).alias(c)): _*).show
+
+/* 
+-- Selected features for Predicting the 'Outcome' 
+-- Outbreak Associated, Age_Group, Source of Infection, Classification, Client Gender 
+-- Making sure NO NULLs in the above features 
+*/
+
+/* Cleaning the df for Age_Group != null values */
+val filter_covid_19_cases = covid_19_cases.filter("Age_Group IS NOT NULL")
+val covid_19_cases_null_values = filter_covid_19_cases.select(covid_19_cases.columns.map(c => sum(col(c).isNull.cast("int")).alias(c)): _*).show
+
+/* Group the Outcome and count the number of outcomes */
+-- use :paste for the following set of instructions
+
+val covid_19_cases_unique = filter_covid_19_cases.groupBy("Outcome").count.filter("count > 1")
+covid_19_cases_unique.show
+
+-- end paste (Cntrl-D)
+
+/*
++--------+------+                                                               
+| Outcome| count|
++--------+------+
+|RESOLVED|298482|
+|  ACTIVE|  6387|
+|   FATAL|  4176|
++--------+------+
+*/
+
+/* Removing the Outcome = ACTIVE from the dataset to focus on only two outcomes*/
+val clean_covid_19_cases = filter_covid_19_cases.filter("Outcome != 'ACTIVE'")
+
+/* 
+-- Selected columns for Predicting the 'Outcome' 
+-- Outbreak_Associated, Age_Group, Source_of_Infection, Classification, Client_Gender 
+-- Converting selected features into numerical format 
+*/
+
+var Outbreak_Ass_# = clean_covid_19_cases.withColumn("Outbreak_Ass_#", when(col("Outbreak_Associated") === "Outbreak Associated", lit("0").cast(IntegerType))
+.otherwise(lit("1").cast(IntegerType)))
+
+var Age_Grp_# = Outbreak_Ass_#.withColumn("Age_Grp_#", when(col("Age_Group") === "19 and younger", lit("0").cast(IntegerType))
+.when(col("Age_Group") === "20 to 29 Years", lit("1").cast(IntegerType))
+.when(col("Age_Group") === "30 to 39 Years", lit("2").cast(IntegerType))
+.when(col("Age_Group") === "40 to 49 Years", lit("3").cast(IntegerType))
+.when(col("Age_Group") === "50 to 59 Years", lit("4").cast(IntegerType))
+.when(col("Age_Group") === "60 to 69 Years", lit("5").cast(IntegerType))
+.when(col("Age_Group") === "70 to 79 Years", lit("6").cast(IntegerType))
+.when(col("Age_Group") === "80 to 89 Years", lit("7").cast(IntegerType))
+.when(col("Age_Group") === "90 and older", lit("8").cast(IntegerType))
+.otherwise(lit("9").cast(IntegerType)))
+
+var Source_of_Inf_# = Age_Grp_#.withColumn("Source_of_Inf_#", when(col("Source_of_Infection") === "Close Contact", lit("0").cast(IntegerType))
+.when(col("Source_of_Infection") === "Community", lit("1").cast(IntegerType))
+.when(col("Source_of_Infection") === "Healthcare", lit("2").cast(IntegerType))
+.when(col("Source_of_Infection") === "Institutional", lit("3").cast(IntegerType))
+.when(col("Source_of_Infection") === "Travel", lit("4").cast(IntegerType))
+.when(col("Source_of_Infection") === "Pending", lit("5").cast(IntegerType))
+.when(col("Source_of_Infection") === "N/A - Outbreak associated", lit("6").cast(IntegerType))
+.otherwise(lit("7").cast(IntegerType)))
+
+var Gender_# = Source_of_Inf_#.withColumn("Gender_#", when(col("Client_Gender") === "MALE", lit("1").cast(IntegerType))
+.when(col("Client_Gender") === "FEMALE", lit("2").cast(IntegerType))
+.when(col("Client_Gender") === "TRANSGENDER", lit("3").cast(IntegerType))
+.otherwise(lit("4").cast(IntegerType)))
+
+var Outcome_# = Gender_#.withColumn("Outcome_#", when(col("Outcome") === "FATAL", lit("0").cast(IntegerType))
+.when(col("Outcome") === "RESOLVED", lit("1").cast(IntegerType))
+.otherwise(lit("2").cast(IntegerType)))
+
+var Class_# = Outcome_#.withColumn("Classification_#", when(col("Classification") === "CONFIRMED", lit("0").cast(IntegerType))
+.otherwise(lit("1").cast(IntegerType)))
+
+val features_covid19_cases = Class_#.select(col("Outbreak_Ass_#"), col("Age_Grp_#"), col("Source_of_Inf_#"), col("Classification_#"), col("Gender_#"), col("Outcome_#"))
+features_covid19_cases.show(10)
+val covid_19_cases_counts = features_covid19_cases.select(features_covid19_cases.columns.map(c => sum(col(c).isNotNull.cast("int")).alias(c)): _*).show
+
+/* covid_19_cases_counts = 302658 */
+
+/*---------------------------------------------------------------------------------------------------------------*/
+/* Unbalanced dataset accuracy calculation */
+/*---------------------------------------------------------------------------------------------------------------*/
+/*
+-- VectorAssembler to add feature column
+-- input columns - features_covid19
+-- feature column - features
+*/
+val Array(trainingData, testData) = features_covid19_cases.randomSplit(Array(0.7, 0.3), 1515)
+
+val assembler = new VectorAssembler()
+  .setInputCols(Array("Outbreak_Ass_#","Age_Grp_#","Source_of_Inf_#","Classification_#","Gender_#"))
+  .setOutputCol("assembled_features")
+
+val indexer = new StringIndexer().setInputCol("Outcome_#").setOutputCol("Outcome_Indexed")
+
+/* Random Forest ML*/
+
+val rf = new RandomForestClassifier()
+ .setFeaturesCol("assembled_features")
+ .setLabelCol("Outcome_Indexed")
+ .setSeed(5243)
+
+/* Set up pipeline */
+val pipeline = new Pipeline()
+  .setStages(Array(indexer, assembler, rf))
+
+/* Set up Evaluator */
+val evaluator = new MulticlassClassificationEvaluator()
+  .setLabelCol("Outcome_Indexed")
+  .setPredictionCol("prediction")
+  .setMetricName("accuracy")
+
+/* Set up Parameter Grid */
+val paramGrid = new ParamGridBuilder()  
+  .addGrid(rf.maxDepth, Array(3, 20))
+  .addGrid(rf.impurity, Array("entropy","gini")).build()
+
+/* Set up cross-validator */
+val cross_validator = new CrossValidator()
+  .setEstimator(pipeline)
+  .setEvaluator(evaluator)
+  .setEstimatorParamMaps(paramGrid)
+  .setNumFolds(3)
+
+/* 
+-- Train the model on training data 
+-- Gives us the best model from the 6 variations
+*/
+
+val cvModel = cross_validator.fit(trainingData)
+
+/* Predict with test data
+-- Transform testData with predictions
+*/
+
+val predictions = cvModel.transform(testData)
+
+/* Evaluate the model check with actual values and print accuracy */
+
+val accuracy = evaluator.evaluate(predictions)
+
+println("accuracy on test data = " + accuracy)
+
+/* accuracy on test data = 0.9864553853608043 */
+
+/*---------------------------------------------------------------------------------------------------------------*/
+/* Now balancing the dataset and check the accuracy changes in the dataset */
+/* Since the original dataset has approx. 99% Resolved outcome with a count of 298,482 */
+/* Therefore, only few records will be randomly selected for testing and predicting the accuracy of the model */
+/*---------------------------------------------------------------------------------------------------------------*/
+
+val sample_dataset1 = features_covid19_cases.sample(0.025,1515).where(col("Outcome_#")>0)
+val sample_dataset2 = features_covid19_cases.sample(0.7,1515).where(col("Outcome_#")<1)
+val features_covid19_balanced = sample_dataset1.union(sample_dataset2)
+features_covid19_balanced.show
+
+val covid_19_cases_unique = features_covid19_balanced.groupBy("Outcome_#").count.filter("count > 1")
+covid_19_cases_unique.show
+
+/*
++---------+-----+                                                               
+|Outcome_#|count|
++---------+-----+
+|        1| 7411|	71.55% (Resolved cases)
+|        0| 2947|	28.45% (Fatal cases)
++---------+-----+
+*/
+
+val covid_19_cases_balanced = features_covid19_balanced.select(features_covid19_balanced.columns.map(c => sum(col(c).isNotNull.cast("int")).alias(c)): _*).show
+/* covid_19_cases_balanced = 10358 */
+
+val Array(trainingData_balanced, testData_balanced) = features_covid19_balanced.randomSplit(Array(0.7, 0.3), 1515)
+
+val assembler_balanced = new VectorAssembler()
+  .setInputCols(Array("Outbreak_Ass_#","Age_Grp_#","Source_of_Inf_#","Classification_#","Gender_#"))
+  .setOutputCol("assembled_features_balanced")
+
+val indexer_balanced = new StringIndexer().setInputCol("Outcome_#").setOutputCol("Outcome_Indexed_balanced")
+
+/* Random Forest ML Balanced dataset */
+
+val rf_balanced = new RandomForestClassifier()
+ .setFeaturesCol("assembled_features_balanced")
+ .setLabelCol("Outcome_Indexed_balanced")
+ .setSeed(1515)
+
+val pipeline_balanced = new Pipeline()
+  .setStages(Array(indexer_balanced, assembler_balanced, rf_balanced))
+
+val evaluator_balanced = new MulticlassClassificationEvaluator()
+  .setLabelCol("Outcome_Indexed_balanced")
+  .setPredictionCol("prediction")
+  .setMetricName("accuracy")
+
+val paramGrid_balanced = new ParamGridBuilder()  
+  .addGrid(rf_balanced.maxDepth, Array(3, 20))
+  .addGrid(rf_balanced.impurity, Array("entropy","gini")).build()
+
+val cross_validator_balanced = new CrossValidator()
+  .setEstimator(pipeline_balanced)
+  .setEvaluator(evaluator_balanced)
+  .setEstimatorParamMaps(paramGrid_balanced)
+  .setNumFolds(3)
+
+/* Train the model on training data */
+
+val cvModel_balanced = cross_validator_balanced.fit(trainingData_balanced)
+
+/* Predict with test data 
+-- Transform testData with predictions
+*/
+
+val predictions_balanced = cvModel_balanced.transform(testData_balanced)
+
+/* Evaluate the model
+-- check with actual values and print accuracy
+*/
+
+val accuracy_balanced = evaluator_balanced.evaluate(predictions_balanced)
+
+println("accuracy on test (balanced) data = " + accuracy_balanced)
+
+/* accuracy on test (balanced) data = 0.8845193508114857 */
+
+/*---------------------------------------------------------------------------------------------------------------*/
+/* Now run the test data of Unbalanced dataframe using the balanced training dataframe to predict the outcome */
+/*---------------------------------------------------------------------------------------------------------------*/
+
+val predictions_balanced1 = cvModel_balanced.transform(testData)
+val accuracy_balanced1 = evaluator_balanced.evaluate(predictions_balanced1)
+println("accuracy on unbalanced dataset using balanced training = " + accuracy_balanced1)
+
+/* accuracy on unbalanced dataset using balanced training = 0.912345420708945 */
