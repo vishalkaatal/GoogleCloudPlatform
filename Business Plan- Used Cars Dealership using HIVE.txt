@@ -1,0 +1,201 @@
+wget https://www.dropbox.com/s/rsrxro7r1c5a4i2/cars.csv
+
+pwd
+
+
+[~]$ hadoop fs -mkdir /BigData
+
+[~]$ hadoop fs -mkdir /BigData/hive
+
+[~]$ hadoop fs -copyFromLocal cars.csv /BigData/hive/cars
+
+[~]$ hadoop fs -ls /BigData/hive/
+
+[~]$ hive
+
+/////////////BASIC CODING: CREATION OF MAIN TABLE AND DATABSE //////////////////
+
+hive> CREATE DATABASE cars_db;
+
+hive> USE cars_db;
+
+hive> CREATE EXTERNAL TABLE IF NOT EXISTS cars (
+maker STRING,
+model STRING,
+mileage INT,
+manufacture_year INT,
+engine_displacement INT,
+engine_power INT,
+body_type STRING,
+color_slug STRING,
+stk_year STRING,
+transmission STRING,
+door_count INT,
+seat_count INT,
+fuel_type STRING,
+datecreated STRING,
+datelastseen STRING,
+price_eur FLOAT)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+LOCATION '/BigData/hive/'
+TBLPROPERTIES("skip.header.line.count"="1");
+
+-- Converting String date column to actual date values////
+
+hive> CREATE TABLE IF NOT EXISTS cars_mod AS 
+SELECT  maker, model, mileage, manufacture_year, engine_displacement, engine_power, body_type, color_slug, stk_year, transmission, door_count, seat_count, fuel_type,
+CAST(to_date(from_unixtime(unix_timestamp(datecreated,'yyyy-MM-dd'))) AS date) as datecreated,
+CAST(to_date(from_unixtime(unix_timestamp(datelastseen,'yyyy-MM-dd'))) AS date) as datelastseen,
+price_eur FROM cars;
+
+--Cleaning the dataset
+
+hive> CREATE TABLE IF NOT EXISTS cars_new
+AS SELECT maker, model, mileage, manufacture_year, transmission, door_count, seat_count, fuel_type, datecreated, datelastseen, DATEDIFF(datelastseen, datecreated) AS Inventory_Store_Time,
+price_eur 
+FROM cars_mod;
+
+SELECT * FROM cars_new LIMIT 10;
+
+hive> CREATE TABLE IF NOT EXISTS cars_clean1 
+AS SELECT maker, model, mileage, manufacture_year, transmission, door_count, seat_count, fuel_type, price_eur, datecreated, datelastseen, Inventory_Store_Time 
+FROM cars_new
+WHERE manufacture_year > 2010 AND manufacture_year < 2016 AND transmission in ('man','auto');
+
+
+hive> CREATE TABLE IF NOT EXISTS cars_clean2 
+AS SELECT maker, model, mileage, manufacture_year, transmission, door_count, seat_count, fuel_type, price_eur, datecreated, datelastseen, Inventory_Store_Time 
+FROM cars_clean1
+WHERE model != '' AND maker != '';
+
+
+hive> CREATE TABLE IF NOT EXISTS cars_clean3 
+AS SELECT maker, model, mileage, manufacture_year, transmission, door_count, seat_count, fuel_type, price_eur, datecreated, datelastseen, Inventory_Store_Time
+FROM cars_clean2
+WHERE mileage < 150000 AND fuel_type in ('diesel','gasoline');
+
+
+hive> CREATE TABLE IF NOT EXISTS cars_clean4 
+AS SELECT maker, model, mileage, manufacture_year, transmission, door_count, seat_count, fuel_type, price_eur, datecreated, datelastseen, Inventory_Store_Time
+FROM cars_clean3
+WHERE price_eur > 100 AND price_eur < 100000;
+
+
+hive> CREATE TABLE IF NOT EXISTS cars_clean5 
+AS SELECT maker, model, mileage, manufacture_year, transmission, door_count, seat_count, fuel_type, price_eur, datecreated, datelastseen, Inventory_Store_Time
+FROM cars_clean4
+WHERE seat_count > 2 AND seat_count < 8;
+
+
+hive> CREATE TABLE IF NOT EXISTS cars_clean6 
+AS SELECT maker, model, mileage, manufacture_year, transmission, door_count, seat_count, fuel_type, price_eur, datecreated, datelastseen, Inventory_Store_Time 
+FROM cars_clean5
+WHERE door_count > 1 AND door_count < 6;
+
+hive> CREATE TABLE IF NOT EXISTS cars_clean7 
+AS SELECT maker, model, mileage, manufacture_year, transmission, door_count, seat_count, fuel_type, price_eur, datecreated, datelastseen, Inventory_Store_Time, ROUND(CAST(mileage/price_eur AS FLOAT),2) AS MPP 
+FROM cars_clean6
+WHERE maker in ('audi','skoda','opel','ford','seat','fiat','hyundai','bmw','citroen','toyota');
+
+
+hive> INSERT OVERWRITE LOCAL DIRECTORY '/home/kaatalvishal/vishal'
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+SELECT * FROM cars_clean7;
+
+/home/kaatalvishal/000000_0
+
+rm -r output.csvCopy
+
+USE cars_db;
+
+-- Analysis --
+
+hive> CREATE TABLE IF NOT EXISTS cars_maker 
+AS SELECT maker, count(model), ROUND(AVG(CAST(mileage AS FLOAT)),2), ROUND(AVG(CAST(price_eur AS FLOAT)),2), ROUND(AVG(CAST(MPP AS FLOAT)),2)
+FROM cars_clean7 
+GROUP BY maker
+ORDER BY count(*);
+
+
+
+hive> CREATE TABLE IF NOT EXISTS cars_maker 
+AS SELECT maker, ROUND(AVG(CAST(mileage AS FLOAT)),2), ROUND(AVG(CAST(price_eur AS FLOAT)),2), (ROUND(AVG(CAST(mileage AS FLOAT)),2))/(ROUND(AVG(CAST(price_eur AS FLOAT)),2))
+from cars_clean7 
+group by maker;
+
+
+
+hive> CREATE TABLE IF NOT EXISTS cars_maker 
+AS SELECT maker, count(maker)
+FROM cars_clean6 
+GROUP BY maker
+ORDER BY count(*) DESC;
+
+
+SELECT DISTINICT (maker, model) FROM cars_clean7 where maker= 'skoda' limit 100;
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+SELECT maker, model, mileage, manufacture_year, transmission, fuel_type, door_count, seat_count, price_eur, Clear_Time 
+FROM cars_use
+WHERE manufacture_year > 2000 OR transmission in ('man','auto') OR model != '' OR maker != '' OR mileage < 250000 OR fuel_type != '' 
+OR price_eur > 100 OR price_eur < 200000 OR seat_count > 0 OR seat_count < 9 OR door_count > 0 OR door_count < 7
+LIMIT 100;
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+hive> SELECT * FROM cars_clean6 LIMIT 10;
+
+hive> DROP TABLE cars;
+
+hive > DESCRIBE cars;
+
+hive> DESCRIBE FORMATTED cars_clean1;
+
+hive> SHOW DATABASES;
+
+hive> SHOW TABLES;
+
+hive> DROP DATABASE cars_db CASCADE;
+
+hive> SELECT maker, count(maker) From cars Group BY maker;
+
+
+///////SELECT Commands////////////
+
+select maker, count(model), avg(mileage), avg(price_eur)
+from cars_clean6 
+group by maker
+order by count(*) DESC;
+
+
+hive> SELECT DISTINCT maker FROM cars_clean6;  		
+/////We have 48 rows of distinct car maker//// takes 11 minutes to run
+
+hive> SELECT DISTINCT model FROM cars_clean2;  		
+/////We have 1014 rows of distinct car model//// takes 9 minutes to run
+
+hive> SELECT DISTINCT manufacture_year FROM cars;	
+/////We have 1641 rows of distinct car manufacturing year from 0-2017//// takes 6 minutes to run ////2000-2017
+
+
+///////////////////////////////////////OUTPUT IN CSV FILE
+
+hadoop fs -copyToLocal /user/hive/warehouse/cars_db.db/cars_clean4 /home/kaatalvishal/cars_cleaned;
+
+$hadoop fs -cat hdfs://bigdata-m/user/hive/warehouse/cars_db.db/cars_clean6/* > ~/output.csv;
+
+insert overwrite local directory 'output.csv' row format delimited fields terminated by ',' select * from car_clean6;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
