@@ -1,0 +1,190 @@
+###-- get the dataset using wget command and Rename
+
+wget https://www.dropbox.com/s/vrqv1rcwfox1u10/cars.csv?dl=0
+
+mv cars.csv?dl=0 cars.csv
+
+###-- Create HDFS directory (if not already done)
+
+hadoop fs -mkdir /BigData
+
+###-- Load dataset into HDFS
+
+hadoop fs -copyFromLocal cars.csv /BigData/.
+
+###-- start Spark
+
+spark-shell --master yarn
+
+/* Run import command for sql functions */
+
+import org.apache.spark.sql.functions.{expr, col, column, min, max, desc, avg, sum}
+import org.apache.spark.sql.types._
+
+/* Loading of a cars dataset using schema in Spark as */
+
+-- use :paste for the following set of instructions
+
+val schema = StructType(Array(
+
+		StructField("maker", StringType, true),
+		StructField("model", StringType, true),
+		StructField("mileage", IntegerType, true),
+		StructField("manufacture_year", IntegerType, true),
+		StructField("engine_displacement", IntegerType, true),
+		StructField("engine_power", IntegerType, true),
+		StructField("body_type", StringType, true),
+		StructField("color_slug", StringType, true),
+		StructField("stk_year", IntegerType, true),
+		StructField("transmission", StringType, true),
+		StructField("door_count", IntegerType, true),
+		StructField("seat_count", IntegerType, true),
+		StructField("fuel_type", StringType, true),
+		StructField("date_created", DateType, true),
+		StructField("datelastseen", DateType, true),
+		StructField("price_eur", FloatType, true)))
+
+-- end paste (Cntrl-D)
+
+/* Load the dataset into Spark from HDFS using the following commands */		
+
+-- use :paste for the following set of instructions
+
+val used_cars = spark
+  .read.format("csv")
+  .option("header", "True")
+  .schema(schema)
+  .load("hdfs://10.128.0.6:8020/BigData/cars.csv")
+
+-- end paste (Cntrl-D)
+
+used_cars.show
+
+/* Fixing the DataType for dates and creating new schema. Loading the dataset again into spark */
+
+val schema_new = StructType(Array(
+
+		StructField("maker", StringType, true),
+		StructField("model", StringType, true),
+		StructField("mileage", IntegerType, true),
+		StructField("manufacture_year", IntegerType, true),
+		StructField("engine_displacement", IntegerType, true),
+		StructField("engine_power", IntegerType, true),
+		StructField("body_type", StringType, true),
+		StructField("color_slug", StringType, true),
+		StructField("stk_year", IntegerType, true),
+		StructField("transmission", StringType, true),
+		StructField("door_count", IntegerType, true),
+		StructField("seat_count", IntegerType, true),
+		StructField("fuel_type", StringType, true),
+		StructField("date_created", TimestampType, true),
+		StructField("datelastseen", TimestampType, true),
+		StructField("price_eur", FloatType, true)))
+
+val used_cars = spark
+  .read.format("csv")
+  .option("header", "True")
+  .schema(schema_new)
+  .load("hdfs://10.128.0.6:8020/BigData/cars.csv")
+
+used_cars.show
+
+/* Finding number of null values in dataset */
+val number_of_null_values = used_cars.select(used_cars.columns.map(c => sum(col(c).isNull.cast("int")).alias(c)): _*).show
+
+/* The col with more than 50 % null values are color_slug, stk_year, fuel_type */
+
+/* Finding number of Non Null values */
+val number_of_No_null_values = used_cars.select(used_cars.columns.map(c => sum(col(c).isNotNull.cast("int")).alias(c)): _*).show
+
+/* Group the price column and count the number of unique prices */
+
+-- use :paste for the following set of instructions
+
+val cars_unique_prices = used_cars.groupBy("price_eur").count.filter("count > 1")
+val cars_unique_prices_desc = cars_unique_prices.orderBy(col("count").cast("int").desc)
+cars_unique_prices_desc.show
+
+-- end paste (Cntrl-D)
+
+/* price_eur = 1295.34 has number of count = 673623 */
+
+/*df queries to create a new clean table (Cleaning process) */
+
+/* Removing the col with more than 50 % null values i.e. color_slug, stk_year, fuel_type */
+val clean_used_cars1 = used_cars.drop("color_slug","stk_year","fuel_type")
+
+/* Manufacture Year between 2000 and 2017 (inclusive) */
+val clean_used_cars2 = clean_used_cars1.filter("manufacture_year >= 2000 AND manufacture_year <=2017")
+
+/* Both maker and model exist in the row */
+val clean_used_cars3 = clean_used_cars2.filter(col("maker").isNotNull)
+val clean_used_cars4 = clean_used_cars3.filter(col("model").isNotNull)
+
+/* Price range for car is from 3000 to 2000,000 */
+val clean_used_cars5 = clean_used_cars4.filter("price_eur >= 3000 AND price_eur <=2000000")
+
+/* Removing price_eur = 1295.34 in the Task #5 and removing this price from the dataset
+If you notice the highest one 1295.34 got removed during previous filtering process. Just for filteration, perform the following query */
+val clean_used_cars = clean_used_cars5.filter("price_eur != 1295.34")
+
+/* How many records remaining in clean_used_cars dataframe */
+val number_of_null_values_clean = clean_used_cars.select(clean_used_cars.columns.map(c => sum(col(c).isNull.cast("int")).alias(c)): _*).show
+val number_of_records = clean_used_cars.count
+/* Number of records = 1322853 */       
+
+/* Spark DataFrames query to find the make and model for the cars with the top 10 highest average price */
+val top_10_highest_avg_price = clean_used_cars.select("maker","model","price_eur").groupBy("maker","model")
+.agg(avg(col("price_eur")).alias("avg_price_eur"))
+.orderBy(col("avg_price_eur").desc)
+
+top_10_highest_avg_price.show(10)
+
+/* Spark DataFrames query to find the make and model for the cars with the top 10 lowest average price */
+val top_10_lowest_avg_price = clean_used_cars.select("maker","model","price_eur").groupBy("maker","model")
+.agg(avg(col("price_eur")).alias("avg_price_eur"))
+.orderBy(col("avg_price_eur").asc)
+
+top_10_lowest_avg_price.show(10)
+
+/* Economic Segment DataFrame*/
+val used_car_segment = clean_used_cars
+.groupBy("maker","model")
+.agg(avg(col("price_eur")).alias("avg_price_eur"))
+.orderBy(col("avg_price_eur").desc)
+
+/* Economic Segment Customers | Price: 3000 - 20000*/
+val used_car_economic = used_car_segment.filter("avg_price_eur >=3000 AND avg_price_eur <20000")
+used_car_economic.show(5)
+
+/* Intermediate Segment Customers | Price: 20000 - 300000*/
+val used_car_intermediate = used_car_segment.filter("avg_price_eur >=20000 AND avg_price_eur <300000")
+used_car_intermediate.show(5)
+
+/* Luxury Segment Customers | Price: 300000 - 2000000*/
+val used_car_luxury = used_car_segment.filter("avg_price_eur >= 300000")
+used_car_luxury.show(5)
+
+/* Inventory of used cars */
+val manuf_count = clean_used_cars.groupBy("manufacture_year").count
+val manuf_count_asc = manuf_count.orderBy(col("manufacture_year").asc).show
+
+/* Top 10 most popular car makers */
+val popular_makers = clean_used_cars.groupBy("maker").count
+val top10_popular_makers = popular_makers.orderBy(col("count").desc).show(10)
+
+/* Car makers transmission type*/
+val transmission_type_clean = clean_used_cars.filter(col("transmission").isNotNull)
+val transmission_type = transmission_type_clean.select("maker","transmission").groupBy("maker","transmission").count
+val transmission_type_desc = transmission_type.orderBy(col("count").desc).show
+
+/* Number of car seats */
+val seat_count_clean = clean_used_cars.filter(col("seat_count").isNotNull)
+val seat_count = seat_count_clean.groupBy("seat_count").count
+val seat_count_desc = seat_count.orderBy(col("count").desc).show(5)
+
+/* Download the dataset for visualization using the following commands */
+
+clean_used_cars.coalesce(1).write.option("header", true).csv("hdfs://10.128.0.6:8020/BigData/clean")
+
+hadoop fs -copyToLocal /BigData/clean/part-00000-a4e3656f-9769-4a0b-9cf9-06f39b423186-c000.csv
